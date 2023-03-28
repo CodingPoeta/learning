@@ -1,3 +1,6 @@
 # IDE configurations
 .idea
 .vscode
+
+target/
+build/
