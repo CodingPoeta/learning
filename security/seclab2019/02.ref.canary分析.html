@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<!-- saved from url=(0054)https://hardenedlinux.github.io/2016/11/27/canary.html -->
+<html class=" wf-source-han-sans-simplified-c-n7-active wf-source-han-sans-simplified-c-n1-active wf-source-han-sans-simplified-c-n4-active wf-active"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta http-equiv="Content-Security-Policy" content="Content-Security-Policy: default-src &#39;none&#39;; script-src &#39;self&#39; &#39;sha256-5kMb497w7ItxXRHeDONhgk1HOjOqzAVeP4/0KPiMW0Y=&#39; &#39;sha256-tTF1yX+RjpAH9BXtHp0JAHdFvbp+J0ug0F5JFBf4nyM=&#39; https://use.typekit.net https://www.google-analytics.com; style-src &#39;self&#39; &#39;unsafe-inline&#39;; img-src &#39;self&#39; https://p.typekit.net https://www.google-analytics.com https://hackadaycom.files.wordpress.com; font-src &#39;self&#39; https://use.typekit.net data://*; connect-src https://use.typekit.net https://p.typekit.net; frame-ancestors &#39;none&#39;; form-action &#39;none&#39;; base-uri hardenedlinux.github.io; upgrade-insecure-requests; block-all-mixed-content;">
+  <meta http-equiv="Referrer-Policy" content="no-referrer, no-referrer-when-downgrade, strict-origin-when-cross-origin">
+  
+  <title>canary分析</title>
+
+  <meta name="description" content="canary analysis@(GCC | Glibc | kernel)[GNU System-Security]        –zet">
+  <meta name="HandheldFriendly" content="True">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+
+  <link rel="shortcut icon" href="https://hardenedlinux.github.io/favicon.ico">
+
+  <link rel="stylesheet" href="./02.ref.canary分析_files/style.css">
+
+  <link rel="canonical" href="http://www.hardenedlinux.org/2016/11/27/canary.html">
+  <link rel="alternate" type="application/rss+xml" title="Hardened GNU/Linux" href="http://www.hardenedlinux.org/feed.xml">
+
+<script async="" src="https://www.google-analytics.com/analytics.js"></script><script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-1566884-2', 'auto');
+  ga('send', 'pageview');
+
+</script>
+<style>.tk-source-han-sans-simplified-c{font-family:"source-han-sans-simplified-c",sans-serif;}</style></head>
+ 
+<body class="post-template tag-text tag-formatting tag-list tag-images-2">
+<div class="site-main">
+        <header class="site-header">
+    <a href="https://hardenedlinux.github.io/2016/11/27/Hardened%20GNU/Linux"><img class="blog-logo" src="./02.ref.canary分析_files/logo_400.png" alt="Blog Logo"></a>
+    <h1 class="blog-title"><a href="http://www.hardenedlinux.org/">Hardened GNU/Linux</a></h1>
+    <h2 class="blog-description">We are a group of free software enthusiasts, anarchists, cyber security researchers. Long live anarchy! Long live 0ld sch00l!!! A small step in security hardening --&gt; A giant leap in Free &amp; Open source software!!!
+</h2>
+    <ul class="nav">
+        <li class="nav-home" role="presentation">
+	    <a href="http://www.hardenedlinux.org/">Home</a>
+	</li>
+        <li class="nav-about" role="presentation">
+	    <a href="http://www.hardenedlinux.org/about">About</a>
+	</li>
+        <li class="nav-about" role="presentation">
+	    <a href="http://www.hardenedlinux.org/about2">Contribution</a>
+	</li>
+    </ul>
+</header>
+ 
+        <div class="site-content" role="main">
+    <article class="post tag-text tag-formatting tag-list"> 
+        <header class="post-header">
+	    <h1 class="post-title">canary分析</h1>
+	    <span class="post-meta">
+	       Post on <time datetime="2016-11-27">27 November 2016</time>
+	    </span>
+	</header>
+	<section class="post-content">
+	    <h1 id="canary-analysis">canary analysis</h1>
+<p>@(GCC | Glibc | kernel)[GNU System-Security]
+        –<a href="https://github.com/fanfuqiang">zet</a></p>
+
+<h2 id="00-导引">00 导引</h2>
+
+<p>由于stack overflow而引发的攻击非常普遍也非常古老, 相应地一种叫做canary的
+mitigation技术很早就出现在gcc/glibc里, 直到现在也作为系统安全的第一道防线存在.</p>
+
+<p>canary不管是实现还是设计思想都比较简单高效, 就是插入一个值, 在stack overflow发生的
+高危区域的尾部, 当函数返回之时检测canary的值是否经过了改变, 以此来判断stack/buffer
+overflow是否发生.</p>
+
+<p>canary的实现大约是1998年就在gcc里出现出现了第一个合并入upstream的patch, 只不过后
+期的实现将主要的功能移入了Glibc, 并且调整了局部数据和canary的位置, 以扩大数据的受
+保护范围. 因为canary的出现的很早, 所以本文涉及到的GNU toolchains源代码版本来说选择
+非常自由, 我使用的是我熟悉的版本: GCC-4.8.2 &amp; eglibc-2.19 &amp; linux-4.8.</p>
+
+<h2 id="01-示例">01 示例</h2>
+
+<p>在gcc的调用参数里有以下跟canary有关系:</p>
+
+<p>-fstack-protector
+对包含有malloc族系和内部的buffer大于8字节的函数使能canary.</p>
+
+<p>-fstack-protector-all
+对所有函数使能canary.</p>
+
+<p>-fstack-protector-strong</p>
+
+<p>对包含有malloc族系或者内部的buffer大于8字节的或者包含局部数组的或者包含对local 
+frame地址引用的函数使能canary.</p>
+
+<p>-fstack-protector-explicit
+只对有明确stack_protect attribute的函数使能canary.</p>
+
+<p>-fno-stack-protector
+禁用canary.</p>
+
+<p>下面首先给出一个例子, 展示一下canary在应用程序级别对代码的直接影响.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#include &lt;stdio.h&gt;
+
+int main () {
+        int local = 1;
+        char buffer[8];
+        buffer[7] = 2;
+        puts("42\n");
+
+        return 0;
+}
+
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$gcc -m32 -fstack-protector-all -g -o canary canary.c
+
+/// gdb查看运行时的反汇编代码
+///
+   // classical prologue.
+   |0x804846d &lt;main at canary.c:3&gt;          push   %ebp
+   |0x804846e &lt;main+1 at canary.c:3&gt;        mov    %esp,%ebp
+   |0x8048470 &lt;main+3 at canary.c:3&gt;        and    $0xfffffff0,%esp
+   |0x8048473 &lt;main+6 at canary.c:3&gt;        sub    $0x20,%esp
+   // %gs:0x14里面存储的就是canary值, 并将其插入在地址esp+1c处.
+   |0x8048476 &lt;main+9 at canary.c:3&gt;        mov    %gs:0x14,%eax
+   |0x804847c &lt;main+15 at canary.c:3&gt;       mov    %eax,0x1c(%esp)
+   |0x8048480 &lt;main+19 at canary.c:3&gt;       xor    %eax,%eax
+   // 下面的两行代码可以看出gcc对buffer和local的位置进行了重排, 按照一般情况来说
+   // 局部变量的声明先出现的先分配, 也就是地址更大, 也就是说应该是被赋值为1的局部
+   // 变量local的地址更大. 但是这里进行了调整.
+   |0x8048482 &lt;main+21 at canary.c:5&gt;       movl   $0x1,0x10(%esp)
+   |0x804848a &lt;main+29 at canary.c:6&gt;       movb   $0x2,0x1b(%esp)
+   // 入参准备puts()的调用
+   |0x804848f &lt;main+34 at canary.c:7&gt;       movl   $0x8048550,(%esp)
+   |0x8048496 &lt;main+41 at canary.c:7&gt;       call   0x8048340 &lt;puts@plt&gt;
+   |0x804849b &lt;main+46 at canary.c:9&gt;       mov    $0x0,%eax
+   // 取出插入的canary值与(%gs:0x14)处的原值做比较.
+   |0x80484a0 &lt;main+51 at canary.c:10&gt;      mov    0x1c(%esp),%edx
+   |0x80484a4 &lt;main+55 at canary.c:10&gt;      xor    %gs:0x14,%edx
+   |0x80484ab &lt;main+62 at canary.c:10&gt;      je     0x80484b2 &lt;main+69 at canary.c:10&gt;
+   // 如果canary的值发生了篡改, 那么将调用__stack_chk_fail.
+   |0x80484ad &lt;main+64 at canary.c:10&gt;      call   0x8048330 &lt;__stack_chk_fail@plt&gt;
+   |0x80484b2 &lt;main+69 at canary.c:10&gt;      leave
+   |0x80484b3 &lt;main+70 at canary.c:10&gt;      ret
+
+</code></pre></div></div>
+
+<p>根据上面的代码可以画出如下的stack结构.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>        High
+        Address |                 |
+                +-----------------+
+                | arg1            |
+                +-----------------+
+                | return address  |
+                +-----------------+
+        ebp =&gt;  | old ebp         |
+                +-----------------+
+     esp+1c =&gt;  | canary value    |
+                +-----------------+
+     esp+1b =&gt;  | char[7]         |
+                | ...             |
+     esp+14 =&gt;  | char[0]         |
+                +-----------------+
+     esp+10 =&gt;  | local           |
+                +-----------------+
+        Low     |                 |
+        Address
+
+</code></pre></div></div>
+
+<p>上面的分析可以清楚地看出canary的原理, 下面将分析canary在gcc和glibc里的实现细节.</p>
+
+<h2 id="02-细节">02 细节</h2>
+
+<p>canary的实现分为两部分, gcc编译时选择canary的插入位置, 以及生成含有canary的汇编代
+码, glibc产生实际的canary值, 以及提供错误捕捉函数和报错函数. 也就是gcc使用glibc提供
+的组件, gcc本身并不定义. 这样会让canary的值会是一个运行时才动态知道的值, 而不能通过
+查看静态的bianry得到.</p>
+
+<h3 id="gcc">gcc</h3>
+
+<p>在gcc里跟canary的实现分为两部分: 引入canary值的比较的代码, 这是通过对外部变量
+(__stack_chk_guard)引用来实现, 以及插入canary比较出错时输出异常的代码, 这是通过对
+外部定义的异常函数(__stack_chk_fail)的调用来实现的.</p>
+
+<p>也就是说gcc只是声明和使用了__stack_chk_guard/__stack_chk_fail, 并没有定义. 定义是
+在glibc里.</p>
+
+<p>__stack_chk_guard和__stack_chk_fail的插入是在gcc将GIMPLE转换为RTL的pass里分别通
+过函数default_stack_protect_guard()和ix86_stack_protect_fail()构建手动的tree, 然
+后调用expand_normal()自动转换为RTL再插入待分析的用户代码来进行的.</p>
+
+<p>在gcc中这部分的实现代码的调用栈如下:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// 注意由下至上的调用序.
+#0  ix86_stack_protect_fail () at ../../gcc/config/i386/i386.c:37607
+#0  default_stack_protect_guard () at ../../gcc/targhooks.c:635
+#1  stack_protect_prologue () at ../../gcc/function.c:4646
+#2  gimple_expand_cfg () at ../../gcc/cfgexpand.c:4641
+#3  execute_one_pass () at ../../gcc/passes.c:2333
+#4  execute_pass_list () at ../../gcc/passes.c:2381
+#5  expand_function () at ../../gcc/cgraphunit.c:1640
+#6  output_in_order () at ../../gcc/cgraphunit.c:1833
+#7  compile () at ../../gcc/cgraphunit.c:2037
+#8  finalize_compilation_unit () at ../../gcc/cgraphunit.c:2119
+#9  c_write_global_declarations () at ../../gcc/c/c-decl.c:10118
+#10 compile_file () at ../../gcc/toplev.c:557
+#11 do_compile () at ../../gcc/toplev.c:1864
+#12 toplev_main () at ../../gcc/toplev.c:1940
+#13 main () at ../../gcc/main.c:36
+
+</code></pre></div></div>
+
+<p>gcc对__stack_chk_guard的使用其实还涉及到跟linux kernel的相关的部分.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>gcc-4.8.2/gcc/config/i386/gnu-user.h
+
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#line 153
+// 也就是其实__stack_chk_guard的值是由kernel提供的一个随机数.
+// 其实这也是最基本的情况, glibc还实现了不由kernel提供的另外的代码.
+// gs寄存器是一个跟TLS(Thread Local Storage)有关系的寄存器, 一般情况下TLS肯定开启使用的,
+// 所以最普遍的情况就是__stack_chk_guard由kernel提供.
+#ifdef TARGET_LIBC_PROVIDES_SSP
+/* i386 glibc provides __stack_chk_guard in %gs:0x14.  */
+#define TARGET_THREAD_SSP_OFFSET    0x14
+
+</code></pre></div></div>
+
+<p>gcc使用了__stack_chk_guard和__stack_chk_fail之后就完成了canary实现的协议的编译器
+的那部分, 接着查看glibc的细节.</p>
+
+<h3 id="glibc">glibc</h3>
+
+<p>首先查看用户代码canary出错时的glibc错误输出代码:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>eglibc-2.19/debug/stack_chk_fail.c
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#line 24
+void
+__attribute__ ((noreturn))
+__stack_chk_fail (void)
+{
+  __fortify_fail ("stack smashing detected");
+}
+
+</code></pre></div></div>
+
+<p>上面的代码非常简单就是输出出错信息.</p>
+
+<p>接着我们将分析glibc对于整个canary机制的实现过程的代码.</p>
+
+<p>首先给出跟canary相关的调用栈:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#0  security_init () at rtld.c:854
+// 相当于glibc/dynamic-linker的main
+#1  dl_main () at rtld.c:1818
+#2  _dl_sysdep_start () at ../elf/dl-sysdep.c:249
+#3  _dl_start_final () at rtld.c:331
+#4  _dl_start () at rtld.c:557
+// glibc/dynamic-linker入口
+#5  _start () from /lib/ld-linux.so.2
+
+// security_init初始化canary的值到%gs:0x14, 所以这个函数是真正的关键所在. 我们在
+// 下面的代码里会添加注释详细解释.
+static void
+security_init (void)
+{
+  /* Set up the stack checker's canary.  */
+  // _dl_random的值其实在进入这个函数的时候就已经由kernel写入了. 也就是说glibc直
+  // 接使用了_dl_random的值并没有给赋值, 进入下面的函数会看到其实如果不是采用TLS
+  // 这种模式支持, glibc是可以自己产生随机数的. 但是做为普遍情况来说, _dl_random就
+  // 是由kernel写入的. 所以_dl_setup_stack_chk_guard()的行为就是将_dl_random的最
+  // 后一个字节设置为0x00.
+  uintptr_t stack_chk_guard = _dl_setup_stack_chk_guard (_dl_random);
+#ifdef THREAD_SET_STACK_GUARD
+  // TLS会进入这里. macro的定义及其展开详见下面.
+  THREAD_SET_STACK_GUARD (stack_chk_guard);
+  // 删掉部分代码
+  // ...
+  /* We do not need the _dl_random value anymore.  The less
+     information we leave behind, the better, so clear the
+     variable.  */
+  _dl_random = NULL;
+}
+
+// 这个宏只是一个过渡, header的定义见下面.
+//
+/* Set the stack guard field in TCB head.  */
+#define THREAD_SET_STACK_GUARD(value) \
+  THREAD_SETMEM (THREAD_SELF, header.stack_guard, value)
+
+// header的定义.
+// TLS相关的数据结构, 注意元素stack_guard的偏移是20也就是0x14.
+//
+typedef struct
+{
+  void *tcb;        /* Pointer to the TCB.  Not necessarily the
+                       thread descriptor used by libpthread.  */
+  dtv_t *dtv;
+  void *self;       /* Pointer to the thread descriptor.  */
+  int multiple_threads;
+  uintptr_t sysinfo;
+  uintptr_t stack_guard;
+  uintptr_t pointer_guard;
+  int gscope_flag;
+#ifndef __ASSUME_PRIVATE_FUTEX
+  int private_futex;
+#else
+  int __unused1;
+#endif
+  /* Reservation of some values for the TM ABI.  */
+  void *__private_tm[4];
+  /* GCC split stack support.  */
+  void *__private_ss;
+} tcbhead_t;
+
+// 这个是会将canary的值写入%gs:0x14. 进行了删减之保留主要部分.
+//
+/* Same as THREAD_SETMEM, but the member offset can be non-constant.  */
+# define THREAD_SETMEM(descr, member, value) \
+  ({if (sizeof (descr-&gt;member) == 4)                              \
+       asm volatile ("movl %0,%%gs:%P1" :                         \
+                     : "ir" (value),                              \
+                       "i" (offsetof (struct pthread, member)));  \
+   })
+
+</code></pre></div></div>
+
+<p>由此就完成了glibc对canary的值的写入工作.</p>
+
+<h3 id="linux-kernel">linux kernel</h3>
+
+<p>linux初始化gs, 就是跟TLS相关的寄存器, TLS相关的部分i386比较复杂, 由于跟canary没有太
+大关系, 具体其他细节可以参考下面的源文件的注释部分描述.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>linux-4.8/arch/x86/include/asm/stackprotector.h
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#line 99
+static inline void load_stack_canary_segment(void)1
+{
+#ifdef CONFIG_X86_32
+    asm("mov %0, %%gs" : : "r" (__KERNEL_STACK_CANARY) : "memory");
+#endif
+}
+
+</code></pre></div></div>
+
+<p>到这里我们就基本上解释清楚了canary的这条代码线.</p>
+
+<h2 id="03-总结">03 总结</h2>
+
+<p>通过本文可以比较清楚地知道canary的值的流向, kernel初始化了跟TLS相关的寄存器gs, 并
+且提供了canary这个随机值, glibc写入%gs:0x14这个保存随机值的位置并且提供变量定义和
+打印函数定义, 最上面是gcc插入对canary的值的引用和出错函数到用户代码里.</p>
+
+<p><em>live long and prosper.</em></p>
+
+	</section>
+	<section class="post-footer">
+	    <div class="post-tags">
+	        Tagged with: 
+	    </div>
+	</section>
+    </article>
+</div>
+ 
+        <footer class="site-footer">
+    <a href="https://github.com/hardenedlinux"><i class="fa fa-github-alt fa-2x"></i></a>
+    <a href="mailto:contact@hardenedlinux.org"><i class="fa fa-envelope fa-2x"></i></a>
+    <a href="https://twitter.com/hardenedlinux"><i class="fa fa-twitter fa-2x"></i></a>
+    <a href="https://groups.google.com/forum/#!forum/hardenedlinux"><i class="fa fa-google fa-2x"></i></a>
+    <div class="inner">
+        <section class="copyright">This theme copyright by <a href="http://scotthsmith.com/">Scott Smith</a></section>
+    </div>
+</footer>
+ 
+</div>
+<script src="./02.ref.canary分析_files/qdi5fpu.js.download"></script>
+<script>try{Typekit.load({ async: true });}catch(e){}</script>
+
+
+</body></html>
