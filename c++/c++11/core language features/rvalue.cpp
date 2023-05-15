@@ -25,7 +25,7 @@ void Test(T &&t) {
 }
 
 int main() {
-  Test(1);  // lvalue rvalue rvalue
+  Test(TYPE(1));  // lvalue rvalue rvalue
   TYPE a = 1;
   std::cout << &a << std::endl;
   Test(a);                            // lvalue lvalue rvalue
